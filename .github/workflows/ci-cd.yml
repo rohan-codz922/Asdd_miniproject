@@ -1,0 +1,119 @@
+# ============================================================
+# CI/CD Pipeline – ShopNext E-Commerce
+# ============================================================
+# Trigger: every push or PR to main
+# Jobs:
+#   1. build-test   – lint, test, build (all branches + PRs)
+#   2. docker-release – build & push image to GHCR (main only)
+#   3. deploy        – trigger Render deploy hook (main only)
+# ============================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  # Job 1: Build & Test
+  # Runs on every push and pull_request to main.
+  # Ensures code quality before anything gets deployed.
+  # ──────────────────────────────────────────────────────────
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository at the commit that triggered the workflow
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Install Node 20 and restore npm cache for faster installs
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # 3. Install exact versions from package-lock.json (reproducible builds)
+      - name: Install dependencies
+        run: npm ci
+
+      # 4. Run ESLint via Next.js lint script
+      - name: Lint
+        run: npm run lint
+
+      # 5. Run Jest test suite (exits non-zero on any failure)
+      - name: Test
+        run: npm test
+
+      # 6. Compile TypeScript and produce the production build
+      #    (also validates that standalone output is generated correctly)
+      - name: Build
+        run: npm run build
+
+  # ──────────────────────────────────────────────────────────
+  # Job 2: Docker Build & Push to GHCR
+  # Only runs on direct pushes to main (not PRs).
+  # Requires Job 1 to succeed first.
+  # ──────────────────────────────────────────────────────────
+  docker-release:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: build-test
+    # Skip on pull_request; only run when a commit lands on main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write  # required to push to ghcr.io
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Log in to GitHub Container Registry using the auto-generated GITHUB_TOKEN.
+      # No manual secret needed – GitHub provides this token automatically.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the multi-stage Dockerfile and push two tags:
+      #   - ghcr.io/<owner>/<repo>:<commit-sha>  (immutable, traceable)
+      #   - ghcr.io/<owner>/<repo>:latest          (always points to newest)
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          # Pass NEXT_PUBLIC_* build args here if needed, e.g.:
+          # build-args: |
+          #   NEXT_PUBLIC_SENTRY_DSN=${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+
+  # ──────────────────────────────────────────────────────────
+  # Job 3: Deploy to Render
+  # Only runs on main after the Docker image is published.
+  # Calls a deploy hook URL stored in GitHub Secrets.
+  # ──────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: docker-release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      # Render deploy hooks are a single POST request.
+      # Store the URL in GitHub Secrets as RENDER_DEPLOY_HOOK_URL.
+      - name: Trigger Render deploy
+        run: |
+          curl --silent --fail -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          echo "Deploy hook triggered successfully."
