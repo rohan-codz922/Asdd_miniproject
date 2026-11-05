@@ -75,6 +75,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # GHCR requires all-lowercase image names; repo names may have uppercase letters.
+      - name: Set lowercase image name
+        run: echo "IMAGE_NAME=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       # Log in to GitHub Container Registry using the auto-generated GITHUB_TOKEN.
       # No manual secret needed – GitHub provides this token automatically.
       - name: Log in to GitHub Container Registry
@@ -96,8 +100,8 @@ jobs:
           # build-args: |
           #   NEXT_PUBLIC_SENTRY_DSN=${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
 
   # ──────────────────────────────────────────────────────────
   # Job 3: Deploy to Render
